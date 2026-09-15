@@ -23,6 +23,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -838,10 +839,85 @@ namespace ClassicUO
         public SDL_Keymod KeymodOverride;
         public bool EscOverride;
         private int zoomCounter;
+        private readonly System.Collections.Generic.HashSet<int> controllerKeys = new System.Collections.Generic.HashSet<int>();
+        private bool controllerPointer, controllerLeft, controllerRight;
+        private Point lastControllerPosition;
+        private float nextControllerScroll;
+
+        public void ReleaseControllerInput()
+        {
+            ReleaseControllerMouse();
+            foreach (int code in controllerKeys)
+            {
+                var key = new SDL_KeyboardEvent { keysym = new SDL_Keysym { sym = (SDL_Keycode)code } };
+                Keyboard.OnKeyUp(key);
+                UIManager.KeyboardFocusControl?.InvokeKeyUp(key.keysym.sym, SDL_Keymod.KMOD_NONE);
+                _scene?.OnKeyUp(key);
+            }
+            if (controllerKeys.Count > 0) Plugin.ProcessHotkeys(0, 0, false);
+            controllerKeys.Clear();
+            Keyboard.Shift = Keyboard.Ctrl = Keyboard.Alt = false;
+        }
+
+        private void ReleaseControllerMouse()
+        {
+            if (controllerPointer || controllerLeft || controllerRight)
+            {
+                Mouse.LButtonPressed = Mouse.RButtonPressed = Mouse.IsDragging = false;
+                if (_scene != null) SimulateMouse(false, controllerLeft, false, controllerRight, false, false);
+                controllerPointer = controllerLeft = controllerRight = false;
+            }
+        }
+
+        private void UpdateControllerKeys(SDL_Keymod mods)
+        {
+            var output = ControllerSupport.Instance?.Output;
+            foreach (int code in controllerKeys.ToArray())
+            {
+                if (output != null && output.Keys.Contains(code)) continue;
+                controllerKeys.Remove(code);
+                // For ordinary keys, keep a concurrently held physical keyboard key down.
+                if (code < 128 && UnityEngine.Input.GetKey((UnityEngine.KeyCode)code)) continue;
+                var key = new SDL_KeyboardEvent { keysym = new SDL_Keysym { sym = (SDL_Keycode)code, mod = mods } };
+                Keyboard.OnKeyUp(key); UIManager.KeyboardFocusControl?.InvokeKeyUp(key.keysym.sym, mods);
+                _scene?.OnKeyUp(key); Plugin.ProcessHotkeys(0, 0, false);
+            }
+            if (output == null) return;
+            foreach (int code in output.Keys)
+            {
+                if (!controllerKeys.Add(code)) continue;
+                if (code < 128 && UnityEngine.Input.GetKey((UnityEngine.KeyCode)code)) continue;
+                var key = new SDL_KeyboardEvent { keysym = new SDL_Keysym { sym = (SDL_Keycode)code, mod = mods } };
+                Keyboard.OnKeyDown(key);
+                if (Plugin.ProcessHotkeys(code, (int)mods, true))
+                {
+                    UIManager.KeyboardFocusControl?.InvokeKeyDown(key.keysym.sym, mods);
+                    _scene?.OnKeyDown(key);
+                }
+            }
+        }
 
         private void MouseUpdate()
         {
             var oneOverScale = 1f / Batcher.scale;
+            if (MobileSettingsUI.BlocksGameInput || MenuPresenter.IsMenuOpened || !UnityEngine.Application.isFocused)
+            {
+                ReleaseControllerInput();
+                Mouse.LButtonPressed = Mouse.RButtonPressed = Mouse.IsDragging = false;
+                return;
+            }
+            var controller = ControllerSupport.Instance;
+            if (controller != null && controller.PointerActive)
+            {
+                controllerPointer = true;
+                Mouse.Position = ConvertUnityMousePosition(controller.Pointer, oneOverScale);
+                Mouse.RealPosition = Mouse.Position;
+                Mouse.LButtonPressed = controller.Output.Left;
+                Mouse.RButtonPressed = controller.Output.Right;
+                Mouse.IsDragging = Mouse.LButtonPressed || Mouse.RButtonPressed;
+                return;
+            }
+            ReleaseControllerMouse();
             
             //Finger/mouse handling
             if (UnityEngine.Application.isMobilePlatform && UserPreferences.UseMouseOnMobile.CurrentValue == 0)
@@ -896,9 +972,29 @@ namespace ClassicUO
         private void UnityInputUpdate()
         {
             var oneOverScale = 1f / Batcher.scale;
+            if (MobileSettingsUI.BlocksGameInput || MenuPresenter.IsMenuOpened || !UnityEngine.Application.isFocused)
+            {
+                ReleaseControllerInput();
+                return;
+            }
             
             //Finger/mouse handling
-            if (UnityEngine.Application.isMobilePlatform && UserPreferences.UseMouseOnMobile.CurrentValue == 0)
+            if (controllerPointer)
+            {
+                var output = ControllerSupport.Instance.Output;
+                SimulateMouse(output.Left && !controllerLeft, !output.Left && controllerLeft,
+                    output.Right && !controllerRight, !output.Right && controllerRight,
+                    Mouse.Position != lastControllerPosition, false);
+                controllerLeft = output.Left; controllerRight = output.Right; lastControllerPosition = Mouse.Position;
+                if ((output.ScrollUp || output.ScrollDown) && UnityEngine.Time.unscaledTime >= nextControllerScroll)
+                {
+                    UIManager.OnMouseWheel(output.ScrollUp);
+                    _scene.OnMouseWheel(output.ScrollUp);
+                    nextControllerScroll = UnityEngine.Time.unscaledTime + .15f;
+                }
+                else if (!output.ScrollUp && !output.ScrollDown) nextControllerScroll = 0;
+            }
+            else if (UnityEngine.Application.isMobilePlatform && UserPreferences.UseMouseOnMobile.CurrentValue == 0)
             {
                 var fingers = Lean.Touch.LeanTouch.GetFingers(true, false);
 
@@ -979,6 +1075,10 @@ namespace ClassicUO
 
             //Keyboard handling
             var keymod = KeymodOverride;
+            int controllerMods = ControllerSupport.Instance?.Output.Modifiers ?? 0;
+            if ((controllerMods & 1) != 0) keymod |= SDL_Keymod.KMOD_LSHIFT;
+            if ((controllerMods & 2) != 0) keymod |= SDL_Keymod.KMOD_LCTRL;
+            if ((controllerMods & 4) != 0) keymod |= SDL_Keymod.KMOD_LALT;
             if (UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftAlt))
             {
                 keymod |= SDL_Keymod.KMOD_LALT;
@@ -1010,8 +1110,10 @@ namespace ClassicUO
             
             foreach (var keyCode in _keyCodeEnumValues)
             {
+                // Gamepad inputs are translated through the editable profile, never as raw key codes.
+                if (keyCode >= UnityEngine.KeyCode.JoystickButton0) continue;
                 var key = new SDL_KeyboardEvent {keysym = new SDL_Keysym {sym = (SDL_Keycode) keyCode, mod = keymod}};
-                if (UnityEngine.Input.GetKeyDown(keyCode))
+                if (UnityEngine.Input.GetKeyDown(keyCode) && !controllerKeys.Contains((int)keyCode))
                 {
                     Keyboard.OnKeyDown(key);
 
@@ -1024,7 +1126,7 @@ namespace ClassicUO
                     else
                         _ignoreNextTextInput = true;
                 }
-                if (UnityEngine.Input.GetKeyUp(keyCode))
+                if (UnityEngine.Input.GetKeyUp(keyCode) && !(ControllerSupport.Instance?.Output.Keys.Contains((int)keyCode) ?? false))
                 {
                     Keyboard.OnKeyUp(key);
                     UIManager.KeyboardFocusControl?.InvokeKeyUp(key.keysym.sym, key.keysym.mod);
@@ -1032,6 +1134,8 @@ namespace ClassicUO
                     Plugin.ProcessHotkeys(0, 0, false);
                 }
             }
+
+            UpdateControllerKeys(keymod);
 
             if (EscOverride)
             {

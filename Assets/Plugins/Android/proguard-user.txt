@@ -1,0 +1,3 @@
+# The folder picker is invoked through Unity's JNI bridge; Android recreates its fragment.
+-keep class com.mobileuo.importer.ClientFolderPicker { *; }
+-keep class com.mobileuo.importer.ClientFolderPicker$PickerFragment { *; }

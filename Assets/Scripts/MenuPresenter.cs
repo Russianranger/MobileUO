@@ -21,6 +21,7 @@ public class MenuPresenter : MonoBehaviour
     private readonly List<OptionEnumView> optionEnumViews = new List<OptionEnumView>();
     
     private bool menuOpened;
+    public static bool IsMenuOpened { get; private set; }
 
     void Awake()
     {
@@ -43,6 +44,7 @@ public class MenuPresenter : MonoBehaviour
         GetOptionEnumViewInstance().Initialize(typeof(TextureFilterMode), UserPreferences.TextureFiltering, "Texture Filtering", false, false);
 
         AddHeader("Input");
+        MobileSettingsUI.Button(optionEnumViewInstance.transform.parent, "Physical controller controls", () => ControllerSupport.Instance.OpenSettings());
         GetOptionEnumViewInstance().Initialize(typeof(ContainerItemSelection), UserPreferences.ContainerItemSelection, "Container Item Selection", false, false);
         GetOptionEnumViewInstance().Initialize(typeof(VisualizeFingerInput), UserPreferences.VisualizeFingerInput, "Visualize Finger Input", false, false);
         GetOptionEnumViewInstance().Initialize(typeof(UseMouseOnMobile), UserPreferences.UseMouseOnMobile, "Use Mouse", false, false);
@@ -98,6 +100,8 @@ public class MenuPresenter : MonoBehaviour
     private void OnMenuButtonClicked()
     {
         menuOpened = !menuOpened;
+        IsMenuOpened = menuOpened;
+        ControllerSupport.Instance?.RequireNeutral();
 
         DOTween.Kill(listTransform);
 
@@ -110,4 +114,6 @@ public class MenuPresenter : MonoBehaviour
             listTransform.DOLocalMove(listClosedPosition, listTweenDuration);
         }
     }
+
+    private void OnDisable() { IsMenuOpened = false; }
 }

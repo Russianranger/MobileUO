@@ -24,7 +24,14 @@ public class GameState : IState
         if (Application.isMobilePlatform || string.IsNullOrEmpty(config.ClientPathForUnityEditor))
         {
             var configPath = config.GetPathToSaveFiles();
+            try { ClientImportTransaction.Recover(configPath); }
+            catch (System.Exception e) { OnError("Could not recover the previous client import: " + e.Message); return; }
             var configurationDirectory = new DirectoryInfo(configPath);
+            if (!configurationDirectory.Exists)
+            {
+                OnError("Client files are missing. Edit the configuration and choose Import client folder.");
+                return;
+            }
             var files = configurationDirectory.GetFiles().Select(x => x.Name).ToList();
             var hasAnimationFiles = UtilityMethods.EssentialUoFilesExist(files);
             if (hasAnimationFiles == false)

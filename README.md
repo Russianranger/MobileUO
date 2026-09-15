@@ -18,6 +18,8 @@ alt="chat on Discord"></a>
 # How to Play?
 Follow the instructions on the [Wiki](https://github.com/MobileUO/MobileUO/wiki) to install and configure MobileUO for your mobile device.
 
+This fork adds Android client-folder import and editable physical controller controls, including cursor movement, mouse buttons, keys, modifier combinations, and stick calibration. See [Android setup and testing](docs/android-folder-import-controller.md) for usage and build instructions.
+
 # See it in action
 
 Click to play the video

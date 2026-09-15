@@ -583,10 +583,13 @@ namespace ClassicUO.Game.Scenes
                 }
             }
 
-            if (JoystickInput != Vector2.Zero && UserPreferences.JoystickCancelsFollow.CurrentValue == (int) PreferenceEnums.JoystickCancelsFollow.On)
+            if (JoystickInput != Vector2.Zero)
             {
-                _continueRunning = false;
-                StopFollowing();
+                if (UserPreferences.JoystickCancelsFollow.CurrentValue == (int) PreferenceEnums.JoystickCancelsFollow.On)
+                {
+                    _continueRunning = false;
+                    StopFollowing();
+                }
                 World.Player.Walk(DirectionHelper.DirectionFromVectors(Vector2.Zero, JoystickInput), ProfileManager.Current.AlwaysRun || JoystickInput.Length() > JoystickRunThreshold);
             }
 

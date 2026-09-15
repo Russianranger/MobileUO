@@ -3,6 +3,7 @@ using System.Collections;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Threading.Tasks;
 using ClassicUO.Data;
 using DG.Tweening;
 using Rssdp;
@@ -135,6 +136,71 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
 
     public bool CreateServer;
 
+    private string pendingClientImport;
+    private bool importInProgress;
+    private bool saving;
+    private int importGeneration;
+    private Button importClientFolderButton;
+    private GameObject importPanel;
+
+    private void Awake()
+    {
+        // Reuse the existing anchored transfer button; its parent is not a layout group.
+        if (SupportsFolderImport)
+        {
+            importClientFolderButton = markFilesAsDownloadedButton;
+            importClientFolderButton.GetComponentInChildren<Text>().text = "Import client folder";
+        }
+    }
+
+    private static bool SupportsFolderImport => Application.platform == RuntimePlatform.Android || Application.isEditor;
+
+    private async void OnImportClientFolderClicked()
+    {
+        if (importInProgress || saving) return;
+        importInProgress = true;
+        int generation = ++importGeneration;
+        importPanel = MobileSettingsUI.Panel("Import client folder", out var content, AndroidClientFolderImport.Cancel);
+        var status = MobileSettingsUI.Label(content, "Choose the folder containing your client assets.");
+        MobileSettingsUI.Label(content, "Your existing client stays available until you save this configuration. Character profiles are preserved.");
+        try
+        {
+            var importTarget = new ServerConfiguration { Name = "client", PreferExternalStorage = useExternalStorageToggle.isOn };
+            string path = await AndroidClientFolderImport.Pick(Path.GetDirectoryName(importTarget.GetPathToSaveFiles()), progress =>
+            {
+                if (status != null)
+                    status.text = progress.message + (progress.total > 0
+                        ? $"\n{progress.copied / 1048576d:F0} / {progress.total / 1048576d:F0} MB" : "");
+            });
+            if (!isActiveAndEnabled || generation != importGeneration)
+            {
+                if (path != null) await Task.Run(() => Directory.Delete(path, true));
+                return;
+            }
+            if (path != null)
+            {
+                DiscardPendingImport();
+                pendingClientImport = path;
+                importClientFolderButton.GetComponentInChildren<Text>().text = "Client ready — Save";
+            }
+        }
+        catch (Exception e) { Debug.LogException(e); if (isActiveAndEnabled) ShowError(e.Message); }
+        finally
+        {
+            importInProgress = false;
+            if (importPanel != null) Destroy(importPanel);
+        }
+    }
+
+    private void DiscardPendingImport()
+    {
+        if (pendingClientImport == null) return;
+        string path = pendingClientImport;
+        pendingClientImport = null;
+        // Temp cleanup must not block the UI or turn a successful installation into a failure.
+        Task.Run(() => { try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch (IOException) { } });
+    }
+
     
     private void UpdateInputFields()
     {
@@ -145,7 +211,7 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
             exportCharacterProfilesFilesButton.gameObject.SetActive(false);
             deleteServerConfigurationButton.gameObject.SetActive(false);
             deleteServerFilesButton.gameObject.SetActive(false);
-            markFilesAsDownloadedButton.gameObject.SetActive(false);
+            markFilesAsDownloadedButton.gameObject.SetActive(SupportsFolderImport);
         }
         else
         {
@@ -193,7 +259,8 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
         cancelButton.onClick.AddListener(() => OnConfigurationEditCanceled?.Invoke());
         deleteServerConfigurationButton.onClick.AddListener(OnDeleteServerConfigurationButtonClicked);
         deleteServerFilesButton.onClick.AddListener(OnDeleteServerFilesButtonClicked);
-        markFilesAsDownloadedButton.onClick.AddListener(OnMarkFilesAsDownloadedButtonClicked);
+        if (SupportsFolderImport) markFilesAsDownloadedButton.onClick.AddListener(OnImportClientFolderClicked);
+        else markFilesAsDownloadedButton.onClick.AddListener(OnMarkFilesAsDownloadedButtonClicked);
         discoverButton.onClick.AddListener(SearchForDevices);
         exportCharacterProfilesFilesButton.onClick.AddListener(OnExportCharacterProfilesButtonClicked);
         importCharacterProfilesFilesButton.onClick.AddListener(OnImportCharacterProfilesButtonClicked);
@@ -253,6 +320,11 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
 
     private void OnDisable()
     {
+        importGeneration++;
+        if (importInProgress) AndroidClientFolderImport.Cancel();
+        DiscardPendingImport();
+        if (importClientFolderButton != null)
+            importClientFolderButton.GetComponentInChildren<Text>().text = "Import client folder";
         saveButton.onClick.RemoveAllListeners();
         cancelButton.onClick.RemoveAllListeners();
         deleteServerConfigurationButton.onClick.RemoveAllListeners();
@@ -266,8 +338,9 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
         ResetImportCharacterProfilesFilesButton();
     }
     
-    private void OnSaveButtonClicked()
+    private async void OnSaveButtonClicked()
     {
+        if (saving || importInProgress) return;
         var valid = ValidateFields(out var validationError);
         if (valid == false)
         {
@@ -275,34 +348,46 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
             return;
         }
         
-        if (ServerConfigurationToEdit.Name != serverNameInputField.text)
+        string existing = serverConfigurationToEdit.GetPathToSaveFiles();
+        var target = new ServerConfiguration { Name = serverNameInputField.text, PreferExternalStorage = useExternalStorageToggle.isOn };
+        string destination = target.GetPathToSaveFiles();
+        if (destination != existing && Directory.Exists(destination))
         {
-            //Rename directory where client files are saved, if it exists
-            var currentDirectoryPath = serverConfigurationToEdit.GetPathToSaveFiles();
-            var directoryInfo = new DirectoryInfo(currentDirectoryPath);
+            ShowError("A client folder with this name already exists. Choose another name.");
+            return;
+        }
+        saving = true;
+        var savePanel = MobileSettingsUI.Panel("Saving configuration", out var saveContent, null);
+        MobileSettingsUI.Label(saveContent, "Installing client files and preserving character profiles…");
+        try
+        {
+            string staged = pendingClientImport;
+            if (staged != null)
+                await Task.Run(() => ClientImportTransaction.Install(staged, destination, existing, true));
+            else if (destination != existing && Directory.Exists(existing))
+                await Task.Run(() => ClientImportTransaction.Install(existing, destination, existing));
+            else Directory.CreateDirectory(destination);
+
+            ServerConfigurationToEdit.Name = target.Name;
+            ServerConfigurationToEdit.UoServerUrl = uoServerUrlInputField.text;
+            ServerConfigurationToEdit.UoServerPort = uoServerPortInputField.text;
+            ServerConfigurationToEdit.FileDownloadServerUrl = fileDownloadServerUrlInputField.text;
+            ServerConfigurationToEdit.FileDownloadServerPort = fileDownloadServerPortInputField.text;
+            ServerConfigurationToEdit.ClientVersion = clientVersionInputField.text;
+            ServerConfigurationToEdit.UseEncryption = useEncryptionToggle.isOn;
+            ServerConfigurationToEdit.PreferExternalStorage = useExternalStorageToggle.isOn;
+            ServerConfigurationToEdit.ClientPathForUnityEditor = clientPathForUnityEditorInputField.text;
+            if (staged != null) ServerConfigurationToEdit.AllFilesDownloaded = true;
+            DiscardPendingImport();
             
-            ServerConfigurationToEdit.Name = serverNameInputField.text;
-            var newDirectoryPath = serverConfigurationToEdit.GetPathToSaveFiles();
-            
-            if (directoryInfo.Exists)
+            OnConfigurationEditSaved?.Invoke();
+            if (destination != existing && Directory.Exists(existing))
             {
-                Directory.Move(currentDirectoryPath, newDirectoryPath);
-            }
-            else
-            {
-                Directory.CreateDirectory(newDirectoryPath);
+                Task.Run(() => { try { Directory.Delete(existing, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } });
             }
         }
-        ServerConfigurationToEdit.UoServerUrl = uoServerUrlInputField.text;
-        ServerConfigurationToEdit.UoServerPort = uoServerPortInputField.text;
-        ServerConfigurationToEdit.FileDownloadServerUrl = fileDownloadServerUrlInputField.text;
-        ServerConfigurationToEdit.FileDownloadServerPort = fileDownloadServerPortInputField.text;
-        ServerConfigurationToEdit.ClientVersion = clientVersionInputField.text;
-        ServerConfigurationToEdit.UseEncryption = useEncryptionToggle.isOn;
-        ServerConfigurationToEdit.PreferExternalStorage = useExternalStorageToggle.isOn;
-        ServerConfigurationToEdit.ClientPathForUnityEditor = clientPathForUnityEditorInputField.text;
-        
-        OnConfigurationEditSaved?.Invoke();
+        catch (Exception e) { Debug.LogException(e); ShowError("Could not save client files: " + e.Message); }
+        finally { saving = false; Destroy(savePanel); }
     }
 
     private void ShowError(string validationError)
@@ -342,13 +427,13 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
             return false;
         }
 
-        if (serverName.IndexOfAny(Path.GetInvalidPathChars()) != -1)
+        if (!ClientImportTransaction.ValidConfigurationName(serverName))
         {
             validationError = "Server Name contains illegal characters for filesystem path.";
             return false;
         }
 
-        var configsWithSameName = ServerConfigurationModel.ServerConfigurations.Where(x => x.Name == serverName).ToList();
+        var configsWithSameName = ServerConfigurationModel.ServerConfigurations.Where(x => string.Equals(x.Name, serverName, StringComparison.OrdinalIgnoreCase)).ToList();
         configsWithSameName.Remove(serverConfigurationToEdit);
         if (configsWithSameName.Count > 0)
         {
@@ -379,7 +464,7 @@ public class ServerConfigurationEditPresenter : MonoBehaviour
         }
 
         //Skip file download server url and port validation if AllFilesDownloaded is set to true
-        if (serverConfigurationToEdit.AllFilesDownloaded == false)
+        if (serverConfigurationToEdit.AllFilesDownloaded == false && pendingClientImport == null)
         {
             //File Download Server Url validation
             var fileDownloadServerUrl = fileDownloadServerUrlInputField.text;

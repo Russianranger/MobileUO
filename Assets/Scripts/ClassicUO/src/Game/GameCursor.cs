@@ -526,7 +526,7 @@ namespace ClassicUO.Game
 
             DrawToolTip(sb, Mouse.Position);
 
-            if (!Settings.GlobalSettings.RunMouseInASeparateThread)
+            if (!Settings.GlobalSettings.RunMouseInASeparateThread || (ControllerSupport.Instance?.PointerActive ?? false))
             {
                 ushort graphic = Graphic;
 
