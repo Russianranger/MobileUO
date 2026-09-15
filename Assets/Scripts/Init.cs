@@ -31,6 +31,7 @@ public class Init : MonoBehaviour
         ConsoleRedirect.Redirect();
         
         UserPreferences.Initialize();
+        gameObject.AddComponent<ControllerSupport>();
 
         StateManager.AddState(new BootState());
         StateManager.AddState(new ServerConfigurationState(serverConfigurationUiParent));

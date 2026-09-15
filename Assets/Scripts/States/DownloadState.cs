@@ -49,7 +49,6 @@ public class DownloadState : IState
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
         serverConfiguration = ServerConfigurationModel.ActiveConfiguration;
         Debug.Log($"Downloading files to {serverConfiguration.GetPathToSaveFiles()}");
-        var port = int.Parse(serverConfiguration.FileDownloadServerPort);
         
         if (serverConfiguration.AllFilesDownloaded || Application.isEditor && string.IsNullOrEmpty(serverConfiguration.ClientPathForUnityEditor) == false)
         {
@@ -58,6 +57,11 @@ public class DownloadState : IState
         else
         {
             downloadPresenter.gameObject.SetActive(true);
+            if (!int.TryParse(serverConfiguration.FileDownloadServerPort, out var port))
+            {
+                StopAndShowError("File download port is invalid. Edit the configuration or import a client folder.");
+                return;
+            }
 
             //Figure out what kind of downloader we should use
             if (serverConfiguration.FileDownloadServerUrl.ToLowerInvariant().Contains(".zip"))

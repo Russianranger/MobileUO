@@ -85,8 +85,9 @@ public class ClientRunner : MonoBehaviour
 		escButton.onClick.AddListener(OnEscButtonClicked);
 	}
 
-	private void OnDisable()
-	{
+    private void OnDisable()
+    {
+        ControllerSupport.Instance?.RequireNeutral();
 		if (modifierKeyButtonsParent != null)
 		{
 			modifierKeyButtonsParent.SetActive(false);
@@ -256,9 +257,20 @@ public class ClientRunner : MonoBehaviour
             deltaTime = 0.050f;
         }
 
-        if (movementJoystick.isActiveAndEnabled && Client.Game.Scene is GameScene gameScene)
+        var controller = ControllerSupport.Instance;
+        controller?.Sample();
+        if (Client.Game.Scene is GameScene gameScene)
         {
-	        gameScene.JoystickInput = new Microsoft.Xna.Framework.Vector2(movementJoystick.Input.x, -1 * movementJoystick.Input.y);
+            var movement = movementJoystick.isActiveAndEnabled ? movementJoystick.Input : UnityEngine.Vector2.zero;
+            if (controller != null && controller.Movement.sqrMagnitude > 0)
+            {
+                movement = controller.Movement;
+                gameScene.JoystickRunThreshold = controller.Profile.RunThreshold;
+            }
+            else gameScene.JoystickRunThreshold = joystickRunThresholdValues[UserPreferences.JoystickRunThreshold.CurrentValue];
+            if (MobileSettingsUI.BlocksGameInput || MenuPresenter.IsMenuOpened || !Application.isFocused)
+                movement = UnityEngine.Vector2.zero;
+            gameScene.JoystickInput = new Microsoft.Xna.Framework.Vector2(movement.x, -movement.y);
         }
 
         var keymod = SDL.SDL_Keymod.KMOD_NONE;
